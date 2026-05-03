@@ -24,6 +24,11 @@ TERMINAL_THEMES = {
     "Okyanus (Mavi/Beyaz)": {"fg_color": "#1e2a3a", "text_color": "#e0f7fa"}
 }
 
+SERVER_COLORS = [
+    "gray", "#e63946", "#2a9d8f", "#e9c46a", "#f4a261", 
+    "#e76f51", "#8338ec", "#3a86ff", "#ff006e", "#00b4d8"
+]
+
 # --- ÖZEL BİLEŞENLER ---
 class CircularProgressbar(ctk.CTkCanvas):
     def __init__(self, master, radius=50, width=10, fg_color="#1f538d", bg_color="#2b2b2b", text_color="white", **kwargs):
@@ -46,13 +51,68 @@ class CircularProgressbar(ctk.CTkCanvas):
         # Background arc
         self.create_arc(self.width, self.width, self.radius*2 - self.width, self.radius*2 - self.width, 
                         start=0, extent=360, style="arc", width=self.width, outline="#555555", tags="arc")
-        # Foreground arc (kullanım alanı)
+        # Foreground arc
         extent = -(self.value / 100) * 359.9
         self.create_arc(self.width, self.width, self.radius*2 - self.width, self.radius*2 - self.width, 
                         start=90, extent=extent, style="arc", width=self.width, outline=self.fg_color, tags="arc")
         self.itemconfig(self.text_label, text=f"{int(self.value)}%")
 
 # --- YÖNETİCİ SINIFLARI ---
+class SSHConnectionManager:
+    def __init__(self) -> None:
+        self.clients: Dict[str, paramiko.SSHClient] = {}
+
+    def get_client(self, server: dict) -> paramiko.SSHClient:
+        srv_id = f"{server.get('id')}"
+        client = self.clients.get(srv_id)
+        
+        if client:
+            transport = client.get_transport()
+            if transport and transport.is_active():
+                return client
+            else:
+                client.close()
+
+        new_client = paramiko.SSHClient()
+        new_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        new_client.connect(
+            f"{server.get('ip', '')}", 
+            port=int(server.get("port", 22)), 
+            username=f"{server.get('username', 'root')}", 
+            password=f"{server.get('password', '')}", 
+            timeout=5
+        )
+        self.clients[srv_id] = new_client
+        return new_client
+
+    def run_command(self, server: dict, cmd: str) -> str:
+        try:
+            client = self.get_client(server)
+            _, stdout, stderr = client.exec_command(cmd, timeout=5)
+            output = stdout.read().decode('utf-8')
+            err = stderr.read().decode('utf-8')
+            res = output
+            if err:
+                res += "\nHata:\n" + err
+            return res if res.strip() else "Komut çalıştı (çıktı yok)."
+        except paramiko.SSHException as e:
+            srv_id = f"{server.get('id')}"
+            if srv_id in self.clients:
+                self.clients[srv_id].close()
+                del self.clients[srv_id]
+            return f"SSH Hatası: {e}"
+        except (OSError, TimeoutError) as e:
+            return f"Bağlantı Hatası: {e}"
+
+    def close_all(self) -> None:
+        for client in self.clients.values():
+            try:
+                client.close()
+            except (OSError, paramiko.SSHException):
+                pass
+        self.clients.clear()
+
+
 class SettingsManager:
     def __init__(self, filename: str = "settings.json") -> None:
         self.filename = filename
@@ -124,31 +184,6 @@ class ServerManager:
         self.save()
 
 
-def run_ssh_command_sync(server: dict, cmd: str) -> str:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        client.connect(
-            str(server.get("ip", "")), 
-            port=int(server.get("port", 22)), 
-            username=str(server.get("username", "root")), 
-            password=str(server.get("password", "")), 
-            timeout=5
-        )
-        _, stdout, stderr = client.exec_command(cmd)
-        output = stdout.read().decode('utf-8')
-        err = stderr.read().decode('utf-8')
-        client.close()
-        res = output
-        if err:
-            res += "\nHata:\n" + err
-        return res if res.strip() else "Komut çalıştı (çıktı yok)."
-    except paramiko.SSHException as e:
-        return f"SSH Hatası: {str(e)}"
-    except OSError as e:
-        return f"Bağlantı Hatası: {str(e)}"
-
-
 # --- ANA UYGULAMA ---
 class App(ctk.CTk):
     def __init__(self) -> None:
@@ -160,7 +195,10 @@ class App(ctk.CTk):
 
         self.server_manager = ServerManager()
         self.settings_manager = SettingsManager()
+        self.ssh_manager = SSHConnectionManager()
         
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
         ctk.set_appearance_mode(str(self.settings_manager.settings.get("app_theme", "System")))
 
         self.loop = asyncio.new_event_loop()
@@ -213,6 +251,10 @@ class App(ctk.CTk):
 
         self.show_dashboard()
         self.check_notifications()
+
+    def on_closing(self) -> None:
+        self.ssh_manager.close_all()
+        self.destroy()
 
     def check_notifications(self) -> None:
         today = datetime.date.today()
@@ -367,7 +409,7 @@ class DashboardFrame(ctk.CTkFrame):
 
     async def fetch_and_update(self, srv: dict) -> None:
         cmd = "echo CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}') RAM:$(free -m | awk 'NR==2{printf \"%.2f\", $3*100/$2 }') DISK:$(df -h / | awk '$NF==\"/\"{print $5}' | tr -d '%')"
-        output = await asyncio.to_thread(run_ssh_command_sync, srv, cmd)
+        output = await asyncio.to_thread(self.app.ssh_manager.run_command, srv, cmd)
         
         cpu_val = 0.0
         ram_val = 0.0
@@ -390,6 +432,15 @@ class DashboardFrame(ctk.CTkFrame):
                         disk_val = float(v) if v else 0.0
             except (ValueError, IndexError):
                 error_msg = "Veri Alınamadı"
+
+        # Update Live Stats to server dict
+        if not error_msg:
+            for server in self.app.server_manager.servers:
+                if f"{server.get('id')}" == f"{srv.get('id')}":
+                    server["live_cpu"] = cpu_val
+                    server["live_ram"] = ram_val
+                    server["live_disk"] = disk_val
+                    break
 
         self.app.after(0, self.update_ui, f"{srv.get('id')}", cpu_val, ram_val, disk_val, error_msg)
 
@@ -495,7 +546,7 @@ class BulkSSHFrame(ctk.CTkFrame):
             self.app.run_async_task(self.async_ssh_command(srv, cmd, txt))
 
     async def async_ssh_command(self, server: dict, cmd: str, textbox: ctk.CTkTextbox) -> None:
-        output = await asyncio.to_thread(run_ssh_command_sync, server, cmd)
+        output = await asyncio.to_thread(self.app.ssh_manager.run_command, server, cmd)
         self.app.after(0, self._update_textbox, textbox, output)
 
     @staticmethod
@@ -579,7 +630,7 @@ class SingleSSHFrame(ctk.CTkFrame):
         self.app.run_async_task(self.async_ssh_command(srv, cmd))
 
     async def async_ssh_command(self, server: dict, cmd: str) -> None:
-        output = await asyncio.to_thread(run_ssh_command_sync, server, cmd)
+        output = await asyncio.to_thread(self.app.ssh_manager.run_command, server, cmd)
         ip_str = str(server.get('ip', 'IP Yok'))
         self.app.after(0, self._update_textbox, output, ip_str)
 
@@ -592,11 +643,27 @@ class ManagementFrame(ctk.CTkFrame):
     def __init__(self, master: 'App') -> None:
         super().__init__(master, corner_radius=10)
         self.app = master
-        self.label = ctk.CTkLabel(self, text="Sunucu Yönetimi", font=ctk.CTkFont(size=24, weight="bold"))
-        self.label.pack(pady=20, padx=20, anchor="w")
+        self.drag_start_y = 0
+        self.drag_id = None
+        
+        self.top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.top_frame.pack(fill="x", pady=20, padx=20)
+        
+        self.label = ctk.CTkLabel(self.top_frame, text="Sunucu Yönetimi", font=ctk.CTkFont(size=24, weight="bold"))
+        self.label.pack(side="left")
 
-        self.btn_add = ctk.CTkButton(self, text="+ Yeni Sunucu Ekle", command=lambda: self.open_server_dialog())
-        self.btn_add.pack(padx=20, pady=(0, 10), anchor="e")
+        self.btn_add = ctk.CTkButton(self.top_frame, text="+ Yeni Sunucu Ekle", command=lambda: self.open_server_dialog())
+        self.btn_add.pack(side="right", padx=10)
+
+        self.sort_var = ctk.StringVar(value="Özel")
+        self.sort_menu = ctk.CTkOptionMenu(
+            self.top_frame,
+            variable=self.sort_var,
+            values=["Özel", "İsime Göre", "En Fazla RAM", "En Fazla Depolama"],
+            command=self.on_sort_change
+        )
+        self.sort_menu.pack(side="right", padx=10)
+        ctk.CTkLabel(self.top_frame, text="Sıralama:").pack(side="right")
 
         self.list_frame = ctk.CTkScrollableFrame(self)
         self.list_frame.pack(fill="both", expand=True, padx=20, pady=10)
@@ -605,16 +672,75 @@ class ManagementFrame(ctk.CTkFrame):
     def on_show(self) -> None:
         self.refresh_list()
 
+    def on_sort_change(self, choice: str) -> None:
+        _ = choice
+        self.refresh_list()
+
+    def move_server(self, srv_id: str, shift: int) -> None:
+        servers = self.app.server_manager.servers
+        idx = -1
+        for i, s in enumerate(servers):
+            if str(s.get("id")) == str(srv_id):
+                idx = i
+                break
+        if idx == -1: return
+        
+        new_idx = max(0, min(len(servers)-1, idx + shift))
+        if new_idx != idx:
+            srv = servers.pop(idx)
+            servers.insert(new_idx, srv)
+            self.app.server_manager.save()
+            self.refresh_list()
+
+    def cycle_color(self, srv: dict) -> None:
+        curr = srv.get("color", "gray")
+        try:
+            idx = SERVER_COLORS.index(curr)
+            next_color = SERVER_COLORS[(idx + 1) % len(SERVER_COLORS)]
+        except ValueError:
+            next_color = SERVER_COLORS[0]
+            
+        self.app.server_manager.update_server(f"{srv.get('id')}", {"color": next_color})
+        self.refresh_list()
+
     def refresh_list(self) -> None:
         for widget in self.list_frame.winfo_children():
             widget.destroy()
 
-        for srv in self.app.server_manager.servers:
+        servers = list(self.app.server_manager.servers)
+        sort_mode = self.sort_var.get()
+        
+        if sort_mode == "İsime Göre":
+            servers.sort(key=lambda x: x.get("name", "").lower())
+        elif sort_mode == "En Fazla RAM":
+            servers.sort(key=lambda x: x.get("live_ram", 0.0), reverse=True)
+        elif sort_mode == "En Fazla Depolama":
+            servers.sort(key=lambda x: x.get("live_disk", 0.0), reverse=True)
+
+        for srv in servers:
             item = ctk.CTkFrame(self.list_frame)
             item.pack(fill="x", pady=5)
             
-            lbl_tag = ctk.CTkLabel(item, text="■", text_color=str(srv.get("color", "gray")), font=ctk.CTkFont(size=20))
+            if sort_mode == "Özel":
+                handle = ctk.CTkLabel(item, text=" ≡ ", font=ctk.CTkFont(size=20, weight="bold"), cursor="hand2")
+                handle.pack(side="left", padx=5)
+                
+                def on_press(event, s_id=f"{srv.get('id')}"):
+                    self.drag_start_y = event.y_root
+                    self.drag_id = s_id
+                def on_release(event, s_id=f"{srv.get('id')}"):
+                    if self.drag_id != s_id: return
+                    diff = event.y_root - self.drag_start_y
+                    shift = int(diff / 40)
+                    if shift != 0:
+                        self.move_server(s_id, shift)
+                        
+                handle.bind("<ButtonPress-1>", on_press)
+                handle.bind("<ButtonRelease-1>", on_release)
+            
+            lbl_tag = ctk.CTkLabel(item, text="■", text_color=str(srv.get("color", "gray")), font=ctk.CTkFont(size=20), cursor="hand2")
             lbl_tag.pack(side="left", padx=10, pady=10)
+            lbl_tag.bind("<Button-1>", lambda e, s=srv: self.cycle_color(s))
 
             exp = str(srv.get("expiration_date", "Belirtilmedi"))
             lbl = ctk.CTkLabel(item, text=f"{srv.get('name', 'İsimsiz')} | IP: {srv.get('ip', 'IP Yok')} | Bitiş: {exp}")

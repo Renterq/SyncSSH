@@ -48,6 +48,14 @@ class ServerManager:
             try:
                 with open(self.filename, "r", encoding="utf-8") as f:
                     self.servers = json.load(f)
+                    
+                    needs_save = False
+                    for i, s in enumerate(self.servers):
+                        if "id" not in s:
+                            s["id"] = f"legacy_{i}_{datetime.datetime.now().timestamp()}"
+                            needs_save = True
+                    if needs_save:
+                        self.save()
             except:
                 self.servers = []
 
@@ -473,22 +481,46 @@ class ManagementFrame(ctk.CTkFrame):
     def open_date_dialog(self, srv):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Tarih Ayarla")
-        dialog.geometry("300x200")
+        dialog.geometry("350x450")
         dialog.transient(self.master)
         dialog.grab_set()
 
-        ctk.CTkLabel(dialog, text=f"{srv['name']} için Bitiş Tarihi:\n(Format: YYYY-AA-GG)").pack(pady=(20,10))
+        ctk.CTkLabel(dialog, text=f"{srv['name']} için Bitiş Tarihi Seçin:", font=ctk.CTkFont(weight="bold")).pack(pady=(15,5))
+        
+        import tkcalendar
+        
+        current_date_str = srv.get("expiration_date", "")
+        now = datetime.datetime.now()
+        year, month, day = now.year, now.month, now.day
+        if current_date_str:
+            try:
+                parts = current_date_str.split('-')
+                year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+            except:
+                pass
+
+        cal = tkcalendar.Calendar(dialog, selectmode='day', year=year, month=month, day=day, date_pattern='y-mm-dd')
+        cal.pack(pady=10, padx=20, fill="both", expand=True)
+
+        ctk.CTkLabel(dialog, text="Veya elle yazın (YYYY-AA-GG):").pack(pady=(10,0))
         entry_date = ctk.CTkEntry(dialog)
-        entry_date.insert(0, srv.get("expiration_date", ""))
-        entry_date.pack(fill="x", padx=40, pady=10)
+        entry_date.insert(0, current_date_str)
+        entry_date.pack(fill="x", padx=40, pady=5)
+
+        def on_cal_select(event):
+            entry_date.delete(0, 'end')
+            entry_date.insert(0, cal.get_date())
+
+        cal.bind("<<CalendarSelected>>", on_cal_select)
 
         def save_date():
-            self.master.server_manager.update_server(srv["id"], {"expiration_date": entry_date.get()})
+            date_val = entry_date.get().strip()
+            self.master.server_manager.update_server(srv["id"], {"expiration_date": date_val})
             self.refresh_list()
             self.master.check_notifications()
             dialog.destroy()
 
-        ctk.CTkButton(dialog, text="Kaydet", command=save_date).pack(pady=10)
+        ctk.CTkButton(dialog, text="Kaydet", command=save_date).pack(pady=15)
 
     def open_server_dialog(self, server_to_edit=None):
         dialog = ctk.CTkToplevel(self)

@@ -32,7 +32,8 @@ Kaynak kodundan çalıştırmak isterseniz aşağıdaki adımları izleyebilirsi
    cd SyncSSH
 
 2. Gerekli kütüphaneleri yükleyin:
-  pip install customtkinter paramiko tkcalendar
+   ```bash
+   pip install customtkinter paramiko tkcalendar
 
 ## 🛡️ Güvenlik Notu
 SyncSSH, sunucu kimlik bilgilerinizi şu an için `servers.json` dosyası içerisinde düz metin (plain text) olarak saklamaktadır. Kendi kişisel veya güvenli ağ ortamınızda kullanmanız tavsiye edilir. İlerleyen güncellemelerde AES tabanlı şifreleme özellikleri eklenecektir.

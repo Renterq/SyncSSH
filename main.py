@@ -3,10 +3,12 @@ import json
 import asyncio
 import threading
 import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 import customtkinter as ctk
+# noinspection PyPackageRequirements
 import paramiko
 import tkcalendar
+import webbrowser
 
 if TYPE_CHECKING:
     pass
@@ -21,6 +23,34 @@ TERMINAL_THEMES = {
     "Hacker (Siyah/Yeşil)": {"fg_color": "#000000", "text_color": "#00ff00"},
     "Okyanus (Mavi/Beyaz)": {"fg_color": "#1e2a3a", "text_color": "#e0f7fa"}
 }
+
+# --- ÖZEL BİLEŞENLER ---
+class CircularProgressbar(ctk.CTkCanvas):
+    def __init__(self, master, radius=50, width=10, fg_color="#1f538d", bg_color="#2b2b2b", text_color="white", **kwargs):
+        super().__init__(master, width=radius*2, height=radius*2, highlightthickness=0, bg=bg_color, **kwargs)
+        self.radius = radius
+        self.width = width
+        self.fg_color = fg_color
+        self.bg_color = bg_color
+        self.text_color = text_color
+        self.value = 0
+        self.text_label = self.create_text(radius, radius, text="0%", fill=self.text_color, font=("Consolas", int(radius/2.5), "bold"))
+        self.draw()
+
+    def set(self, value: float) -> None:
+        self.value = max(0, min(100, value))
+        self.draw()
+
+    def draw(self) -> None:
+        self.delete("arc")
+        # Background arc
+        self.create_arc(self.width, self.width, self.radius*2 - self.width, self.radius*2 - self.width, 
+                        start=0, extent=360, style="arc", width=self.width, outline="#555555", tags="arc")
+        # Foreground arc (kullanım alanı)
+        extent = -(self.value / 100) * 359.9
+        self.create_arc(self.width, self.width, self.radius*2 - self.width, self.radius*2 - self.width, 
+                        start=90, extent=extent, style="arc", width=self.width, outline=self.fg_color, tags="arc")
+        self.itemconfig(self.text_label, text=f"{int(self.value)}%")
 
 # --- YÖNETİCİ SINIFLARI ---
 class SettingsManager:
@@ -124,7 +154,7 @@ class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
 
-        self.title("SSH VDS Manager")
+        self.title("SyncSSH")
         self.geometry("1100x700")
         self.minsize(900, 600)
 
@@ -145,7 +175,7 @@ class App(ctk.CTk):
         self.sidebar_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self.sidebar_frame.grid_rowconfigure(6, weight=1)
 
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="VDS Manager", font=ctk.CTkFont(size=20, weight="bold"))
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="SyncSSH", font=ctk.CTkFont(size=24, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 30))
 
         self.btn_dashboard = ctk.CTkButton(self.sidebar_frame, text="Dashboard", command=self.show_dashboard)
@@ -252,39 +282,145 @@ class DashboardFrame(ctk.CTkFrame):
     def __init__(self, master: 'App') -> None:
         super().__init__(master, corner_radius=10)
         self.app = master
-        self.label = ctk.CTkLabel(self, text="Dashboard (Gözlem)", font=ctk.CTkFont(size=24, weight="bold"))
-        self.label.pack(pady=20, padx=20, anchor="w")
-        self.content_frame = ctk.CTkFrame(self)
-        self.content_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        self.monitor_task = None
+        self.server_widgets = {}
+
+        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.header_frame.pack(fill="x", padx=20, pady=20)
+        
+        self.label = ctk.CTkLabel(self.header_frame, text="Dashboard (Gözlem)", font=ctk.CTkFont(size=24, weight="bold"))
+        self.label.pack(side="left")
+
+        self.focus_var = ctk.StringVar(value="RAM")
+        self.focus_menu = ctk.CTkOptionMenu(self.header_frame, variable=self.focus_var, values=["RAM", "CPU", "Depolama"], command=self.on_focus_change)
+        self.focus_menu.pack(side="right")
+        ctk.CTkLabel(self.header_frame, text="Odak (Focus):").pack(side="right", padx=10)
+
+        self.content_frame = ctk.CTkScrollableFrame(self)
+        self.content_frame.pack(fill="both", expand=True, padx=20, pady=0)
         self.refresh()
 
     def on_show(self) -> None:
+        self.refresh()
+        if not self.monitor_task or self.monitor_task.done():
+            self.monitor_task = self.app.loop.create_task(self.monitor_loop())
+
+    def on_focus_change(self, choice: str) -> None:
+        _ = choice
         self.refresh()
 
     def refresh(self) -> None:
         for widget in self.content_frame.winfo_children():
             widget.destroy()
+        self.server_widgets.clear()
         
         servers = self.app.server_manager.servers
         if not servers:
             ctk.CTkLabel(self.content_frame, text="Henüz sunucu eklenmedi. Lütfen 'Sunucu Yönetimi' sekmesinden ekleyin.").pack(pady=20)
             return
 
-        for i, srv in enumerate(servers):
-            self.content_frame.columnconfigure(i, weight=1)
+        for srv in servers:
             srv_frame = ctk.CTkFrame(self.content_frame, corner_radius=10)
-            srv_frame.grid(row=0, column=i, padx=10, pady=10, sticky="nsew")
+            srv_frame.pack(fill="x", pady=10, padx=10)
             
-            lbl = ctk.CTkLabel(srv_frame, text=f"{srv.get('name', 'Bilinmeyen')}", font=ctk.CTkFont(size=18, weight="bold"))
-            lbl.pack(pady=10)
-            ctk.CTkLabel(srv_frame, text="CPU Kullanımı:").pack(anchor="w", padx=20)
-            cpu_pb = ctk.CTkProgressBar(srv_frame)
-            cpu_pb.pack(fill="x", padx=20, pady=5)
-            cpu_pb.set(0.0) 
-            ctk.CTkLabel(srv_frame, text="RAM Kullanımı:").pack(anchor="w", padx=20, pady=(10,0))
-            ram_pb = ctk.CTkProgressBar(srv_frame)
-            ram_pb.pack(fill="x", padx=20, pady=5)
-            ram_pb.set(0.0) 
+            left_frame = ctk.CTkFrame(srv_frame, fg_color="transparent")
+            left_frame.pack(side="left", fill="y", padx=20, pady=20)
+            
+            ctk.CTkLabel(left_frame, text=f"{srv.get('name', 'Bilinmeyen')} ({srv.get('ip', '')})", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", pady=(0, 10))
+            
+            focus = self.focus_var.get()
+            widgets: Dict[str, Any] = {"cpu": None, "ram": None, "disk": None, "circle": None}
+            
+            def create_small_bar(parent, title):
+                ctk.CTkLabel(parent, text=title).pack(anchor="w")
+                pb = ctk.CTkProgressBar(parent, width=150)
+                pb.pack(anchor="w", pady=(0, 5))
+                pb.set(0.0)
+                lbl = ctk.CTkLabel(parent, text="Bekleniyor...", font=ctk.CTkFont(size=10))
+                lbl.pack(anchor="w", pady=(0, 10))
+                return pb, lbl
+
+            if focus != "CPU": widgets["cpu"] = create_small_bar(left_frame, "CPU Kullanımı:")
+            if focus != "RAM": widgets["ram"] = create_small_bar(left_frame, "RAM Kullanımı:")
+            if focus != "Depolama": widgets["disk"] = create_small_bar(left_frame, "Depolama:")
+
+            right_frame = ctk.CTkFrame(srv_frame, fg_color="transparent")
+            right_frame.pack(side="right", padx=30, pady=20)
+
+            ctk.CTkLabel(right_frame, text=f"Odak: {focus}", font=ctk.CTkFont(weight="bold")).pack(pady=(0,10))
+            
+            appearance = ctk.get_appearance_mode()
+            bg_col = "#2b2b2b" if appearance == "Dark" else "#dbdbdb"
+            txt_col = "white" if appearance == "Dark" else "black"
+            
+            circle = CircularProgressbar(right_frame, radius=45, width=12, fg_color="#1f538d", bg_color=bg_col, text_color=txt_col)
+            circle.pack()
+            widgets["circle"] = circle
+
+            self.server_widgets[str(srv.get("id"))] = widgets
+
+    async def monitor_loop(self) -> None:
+        while True:
+            for srv in self.app.server_manager.servers:
+                self.app.run_async_task(self.fetch_and_update(srv))
+            await asyncio.sleep(10)
+
+    async def fetch_and_update(self, srv: dict) -> None:
+        cmd = "echo CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}') RAM:$(free -m | awk 'NR==2{printf \"%.2f\", $3*100/$2 }') DISK:$(df -h / | awk '$NF==\"/\"{print $5}' | tr -d '%')"
+        output = await asyncio.to_thread(run_ssh_command_sync, srv, cmd)
+        
+        cpu_val = 0.0
+        ram_val = 0.0
+        disk_val = 0.0
+        error_msg = ""
+        
+        if "Hata" in output or "Bağlantı Hatası" in output:
+            error_msg = "Bağlantı Hatası"
+        else:
+            try:
+                for part in output.strip().split():
+                    if part.startswith("CPU:"):
+                        v = part.split(":")[1]
+                        cpu_val = float(v) if v else 0.0
+                    elif part.startswith("RAM:"):
+                        v = part.split(":")[1]
+                        ram_val = float(v) if v else 0.0
+                    elif part.startswith("DISK:"):
+                        v = part.split(":")[1]
+                        disk_val = float(v) if v else 0.0
+            except (ValueError, IndexError):
+                error_msg = "Veri Alınamadı"
+
+        self.app.after(0, self.update_ui, f"{srv.get('id')}", cpu_val, ram_val, disk_val, error_msg)
+
+    def update_ui(self, srv_id: str, cpu: float, ram: float, disk: float, error_msg: str) -> None:
+        if srv_id not in self.server_widgets: return
+        w = self.server_widgets[srv_id]
+        focus = self.focus_var.get()
+        
+        if error_msg:
+            w["circle"].set(0)
+            if w.get("cpu"): w["cpu"][1].configure(text=error_msg)
+            if w.get("ram"): w["ram"][1].configure(text=error_msg)
+            if w.get("disk"): w["disk"][1].configure(text=error_msg)
+            return
+
+        if focus == "CPU":
+            w["circle"].set(cpu)
+        elif focus == "RAM":
+            w["circle"].set(ram)
+        else:
+            w["circle"].set(disk)
+            
+        def upd(tpl, val, suffix="%"):
+            if tpl:
+                pb, lbl = tpl
+                pb.set(val / 100.0)
+                lbl.configure(text=f"{val:.1f}{suffix}")
+
+        if focus != "CPU": upd(w["cpu"], cpu)
+        if focus != "RAM": upd(w["ram"], ram)
+        if focus != "Depolama": upd(w["disk"], disk)
 
 
 class BulkSSHFrame(ctk.CTkFrame):
@@ -497,7 +633,7 @@ class ManagementFrame(ctk.CTkFrame):
             btn_date.pack(side="right", padx=5)
 
     def delete_server(self, srv: dict) -> None:
-        self.app.server_manager.delete_server(str(srv.get("id")))
+        self.app.server_manager.delete_server(f"{srv.get('id')}")
         self.refresh_list()
         self.app.check_notifications()
 
@@ -537,7 +673,7 @@ class ManagementFrame(ctk.CTkFrame):
 
         def save_date() -> None:
             date_val = entry_date.get().strip()
-            self.app.server_manager.update_server(str(srv.get("id")), {"expiration_date": date_val})
+            self.app.server_manager.update_server(f"{srv.get('id')}", {"expiration_date": date_val})
             self.refresh_list()
             self.app.check_notifications()
             dialog.destroy()
@@ -599,13 +735,13 @@ class ManagementFrame(ctk.CTkFrame):
                 "theme": str(theme_var.get())
             }
             if server_to_edit:
-                srv_data["id"] = str(server_to_edit.get("id"))
+                srv_data["id"] = f"{server_to_edit.get('id')}"
                 if "expiration_date" in server_to_edit:
                     srv_data["expiration_date"] = str(server_to_edit["expiration_date"])
 
             if srv_data["name"] and srv_data["ip"]:
                 if server_to_edit:
-                    self.app.server_manager.update_server(str(server_to_edit.get("id")), srv_data)
+                    self.app.server_manager.update_server(f"{server_to_edit.get('id')}", srv_data)
                 else:
                     self.app.server_manager.add_server(srv_data)
                 
@@ -654,6 +790,17 @@ class SettingsFrame(ctk.CTkFrame):
         self.btn_export.pack(padx=20, pady=5, anchor="w")
         self.btn_import = ctk.CTkButton(self, text="JSON İçe Aktar (Import)")
         self.btn_import.pack(padx=20, pady=5, anchor="w")
+
+        # GitHub Button
+        self.github_btn = ctk.CTkButton(
+            self, 
+            text="🐙 GitHub: SyncSSH", 
+            fg_color="#24292e", 
+            hover_color="#555555", 
+            text_color="white",
+            command=lambda: webbrowser.open("https://github.com/Renterq/SyncSSH")
+        )
+        self.github_btn.pack(side="bottom", pady=30)
 
     def change_app_theme(self, choice: str) -> None:
         ctk.set_appearance_mode(choice)

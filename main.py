@@ -209,27 +209,36 @@ class App(ctk.CTk):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(1, weight=1)
 
-        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
+        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0, fg_color=("#e0e0e0", "#1a1a1a"))
         self.sidebar_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self.sidebar_frame.grid_rowconfigure(6, weight=1)
 
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="SyncSSH", font=ctk.CTkFont(size=24, weight="bold"))
+        font_sidebar = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
+        btn_kwargs = {
+            "fg_color": "transparent",
+            "text_color": ("gray10", "gray90"),
+            "hover_color": ("gray70", "gray30"),
+            "font": font_sidebar,
+            "anchor": "w"
+        }
+
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="SyncSSH", font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 30))
 
-        self.btn_dashboard = ctk.CTkButton(self.sidebar_frame, text="Dashboard", command=self.show_dashboard)
-        self.btn_dashboard.grid(row=1, column=0, padx=20, pady=10)
+        self.btn_dashboard = ctk.CTkButton(self.sidebar_frame, text="📊 Dashboard", command=self.show_dashboard, **btn_kwargs)
+        self.btn_dashboard.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
 
-        self.btn_bulk = ctk.CTkButton(self.sidebar_frame, text="Toplu Komut", command=self.show_bulk_ssh)
-        self.btn_bulk.grid(row=2, column=0, padx=20, pady=10)
+        self.btn_bulk = ctk.CTkButton(self.sidebar_frame, text="⚡ Toplu Komut", command=self.show_bulk_ssh, **btn_kwargs)
+        self.btn_bulk.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
 
-        self.btn_single = ctk.CTkButton(self.sidebar_frame, text="Tekli Kontrol", command=self.show_single_ssh)
-        self.btn_single.grid(row=3, column=0, padx=20, pady=10)
+        self.btn_single = ctk.CTkButton(self.sidebar_frame, text="💻 Tekli Kontrol", command=self.show_single_ssh, **btn_kwargs)
+        self.btn_single.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
 
-        self.btn_manage = ctk.CTkButton(self.sidebar_frame, text="Sunucu Yönetimi", command=self.show_management)
-        self.btn_manage.grid(row=4, column=0, padx=20, pady=10)
+        self.btn_manage = ctk.CTkButton(self.sidebar_frame, text="📁 Sunucu Yönetimi", command=self.show_management, **btn_kwargs)
+        self.btn_manage.grid(row=4, column=0, padx=10, pady=5, sticky="ew")
 
-        self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="Ayarlar", command=self.show_settings)
-        self.btn_settings.grid(row=5, column=0, padx=20, pady=10)
+        self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="⚙️ Ayarlar", command=self.show_settings, **btn_kwargs)
+        self.btn_settings.grid(row=5, column=0, padx=10, pady=5, sticky="ew")
 
         self.top_bar = ctk.CTkFrame(self, height=40, corner_radius=0, fg_color="transparent")
         self.top_bar.grid(row=0, column=1, sticky="ew", padx=20, pady=(10, 0))
@@ -303,8 +312,8 @@ class App(ctk.CTk):
         asyncio.set_event_loop(loop)
         loop.run_forever()
 
-    def run_async_task(self, coro) -> None:
-        asyncio.run_coroutine_threadsafe(coro, self.loop)
+    def run_async_task(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def show_frame(self, name: str) -> None:
         for frame_name, frame in self.frames.items():
@@ -338,6 +347,12 @@ class DashboardFrame(ctk.CTkFrame):
         self.focus_menu.pack(side="right")
         ctk.CTkLabel(self.header_frame, text="Odak (Focus):").pack(side="right", padx=10)
 
+        self.bottom_frame = ctk.CTkFrame(self, fg_color="transparent", height=30)
+        self.bottom_frame.pack(side="bottom", fill="x", padx=20, pady=(5, 10))
+        
+        self.refresh_label = ctk.CTkLabel(self.bottom_frame, text="Veriler Çekiliyor...", font=ctk.CTkFont(family="Segoe UI", size=12, slant="italic"), text_color="gray")
+        self.refresh_label.pack(side="right")
+
         self.content_frame = ctk.CTkScrollableFrame(self)
         self.content_frame.pack(fill="both", expand=True, padx=20, pady=0)
         self.refresh()
@@ -345,7 +360,7 @@ class DashboardFrame(ctk.CTkFrame):
     def on_show(self) -> None:
         self.refresh()
         if not self.monitor_task or self.monitor_task.done():
-            self.monitor_task = self.app.loop.create_task(self.monitor_loop())
+            self.monitor_task = self.app.run_async_task(self.monitor_loop())
 
     def on_focus_change(self, choice: str) -> None:
         _ = choice
@@ -362,29 +377,37 @@ class DashboardFrame(ctk.CTkFrame):
             return
 
         for srv in servers:
-            srv_frame = ctk.CTkFrame(self.content_frame, corner_radius=10)
+            srv_frame = ctk.CTkFrame(self.content_frame, corner_radius=10, fg_color=("#ffffff", "#242424"), border_width=1, border_color=("#cccccc", "#333333"))
             srv_frame.pack(fill="x", pady=10, padx=10)
             
             left_frame = ctk.CTkFrame(srv_frame, fg_color="transparent")
             left_frame.pack(side="left", fill="y", padx=20, pady=20)
             
-            ctk.CTkLabel(left_frame, text=f"{srv.get('name', 'Bilinmeyen')} ({srv.get('ip', '')})", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", pady=(0, 10))
+            ctk.CTkLabel(left_frame, text=f"{srv.get('name', 'Bilinmeyen')} ({srv.get('ip', '')})", font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold")).pack(anchor="w", pady=(0, 10))
             
             focus = self.focus_var.get()
             widgets: Dict[str, Any] = {"cpu": None, "ram": None, "disk": None, "circle": None}
             
-            def create_small_bar(parent, title):
-                ctk.CTkLabel(parent, text=title).pack(anchor="w")
-                pb = ctk.CTkProgressBar(parent, width=150)
+            def create_small_bar(parent, title, val):
+                ctk.CTkLabel(parent, text=title, font=ctk.CTkFont(family="Segoe UI", size=12)).pack(anchor="w")
+                pb = ctk.CTkProgressBar(parent, width=150, progress_color="#2FA572")
                 pb.pack(anchor="w", pady=(0, 5))
-                pb.set(0.0)
-                lbl = ctk.CTkLabel(parent, text="Bekleniyor...", font=ctk.CTkFont(size=10))
+                if val is not None:
+                    pb.set(val / 100.0)
+                    lbl = ctk.CTkLabel(parent, text=f"{val:.1f}%", font=ctk.CTkFont(family="Segoe UI", size=11))
+                else:
+                    pb.set(0.0)
+                    lbl = ctk.CTkLabel(parent, text="Bekleniyor...", font=ctk.CTkFont(family="Segoe UI", size=11))
                 lbl.pack(anchor="w", pady=(0, 10))
                 return pb, lbl
 
-            if focus != "CPU": widgets["cpu"] = create_small_bar(left_frame, "CPU Kullanımı:")
-            if focus != "RAM": widgets["ram"] = create_small_bar(left_frame, "RAM Kullanımı:")
-            if focus != "Depolama": widgets["disk"] = create_small_bar(left_frame, "Depolama:")
+            cpu_val = srv.get("live_cpu")
+            ram_val = srv.get("live_ram")
+            disk_val = srv.get("live_disk")
+
+            if focus != "CPU": widgets["cpu"] = create_small_bar(left_frame, "CPU Kullanımı:", cpu_val)
+            if focus != "RAM": widgets["ram"] = create_small_bar(left_frame, "RAM Kullanımı:", ram_val)
+            if focus != "Depolama": widgets["disk"] = create_small_bar(left_frame, "Depolama:", disk_val)
 
             right_frame = ctk.CTkFrame(srv_frame, fg_color="transparent")
             right_frame.pack(side="right", padx=30, pady=20)
@@ -392,20 +415,34 @@ class DashboardFrame(ctk.CTkFrame):
             ctk.CTkLabel(right_frame, text=f"Odak: {focus}", font=ctk.CTkFont(weight="bold")).pack(pady=(0,10))
             
             appearance = ctk.get_appearance_mode()
-            bg_col = "#2b2b2b" if appearance == "Dark" else "#dbdbdb"
+            bg_col = "#242424" if appearance == "Dark" else "#ffffff"
             txt_col = "white" if appearance == "Dark" else "black"
             
-            circle = CircularProgressbar(right_frame, radius=45, width=12, fg_color="#1f538d", bg_color=bg_col, text_color=txt_col)
+            circle = CircularProgressbar(right_frame, radius=45, width=12, fg_color="#2FA572", bg_color=bg_col, text_color=txt_col)
+            
+            if focus == "CPU" and cpu_val is not None: circle.set(cpu_val)
+            elif focus == "RAM" and ram_val is not None: circle.set(ram_val)
+            elif focus == "Depolama" and disk_val is not None: circle.set(disk_val)
+
             circle.pack()
             widgets["circle"] = circle
 
             self.server_widgets[str(srv.get("id"))] = widgets
 
     async def monitor_loop(self) -> None:
+        def update_lbl(t: str) -> None:
+            self.refresh_label.configure(text=t)
+
         while True:
+            self.app.after(0, update_lbl, "Veriler Yenileniyor... 🔄")
             for srv in self.app.server_manager.servers:
                 self.app.run_async_task(self.fetch_and_update(srv))
-            await asyncio.sleep(10)
+                
+            await asyncio.sleep(2) # Give a short buffer for fetches
+            
+            for remaining in range(10, 0, -1):
+                self.app.after(0, update_lbl, f"Sonraki yenileme: {remaining}sn")
+                await asyncio.sleep(1)
 
     async def fetch_and_update(self, srv: dict) -> None:
         cmd = "echo CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}') RAM:$(free -m | awk 'NR==2{printf \"%.2f\", $3*100/$2 }') DISK:$(df -h / | awk '$NF==\"/\"{print $5}' | tr -d '%')"

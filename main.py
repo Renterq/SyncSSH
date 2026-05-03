@@ -7,8 +7,16 @@ import customtkinter as ctk
 import paramiko
 
 # Genel CustomTkinter Görünüm Ayarları
-ctk.set_appearance_mode("System")
+ctk.set_appearance_mode("Light") # İstek üzerine varsayılan olarak aydınlık mod
 ctk.set_default_color_theme("blue")
+
+# Desteklenen KDE / Terminal Temaları
+TERMINAL_THEMES = {
+    "Beyaz (Varsayılan)": {"fg_color": "#ffffff", "text_color": "#000000"},
+    "Karanlık (Siyah/Beyaz)": {"fg_color": "#1e1e1e", "text_color": "#ffffff"},
+    "Hacker (Siyah/Yeşil)": {"fg_color": "#0d1117", "text_color": "#00ff00"},
+    "Okyanus (Mavi/Beyaz)": {"fg_color": "#1e2a3a", "text_color": "#e0f7fa"}
+}
 
 class ServerManager:
     def __init__(self, filename="servers.json"):
@@ -128,6 +136,7 @@ class App(ctk.CTk):
     def show_management(self): self.show_frame("manage")
     def show_settings(self): self.show_frame("settings")
 
+
 class DashboardFrame(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, corner_radius=10)
@@ -165,6 +174,7 @@ class DashboardFrame(ctk.CTkFrame):
             ram_pb.pack(fill="x", padx=20, pady=5)
             ram_pb.set(0.0) 
 
+
 class BulkSSHFrame(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, corner_radius=10)
@@ -193,7 +203,6 @@ class BulkSSHFrame(ctk.CTkFrame):
             ctk.CTkLabel(self.grid_frame, text="Hiç sunucu bulunamadı. Önce sunucu ekleyin.").pack(pady=20)
             return
 
-        # Çok sunucu varsa 2 kolon yap
         cols = 2 if n > 1 else 1
         for i in range(cols):
             self.grid_frame.columnconfigure(i, weight=1)
@@ -209,7 +218,16 @@ class BulkSSHFrame(ctk.CTkFrame):
             lbl = ctk.CTkLabel(box_frame, text=f"{srv['name']} ({srv['ip']})", font=ctk.CTkFont(weight="bold"))
             lbl.pack(pady=(5,0))
 
-            txt = ctk.CTkTextbox(box_frame, font=ctk.CTkFont(family="Consolas", size=13), height=200, fg_color="#1e1e1e", text_color="#00ff00")
+            theme_name = srv.get("theme", "Beyaz (Varsayılan)")
+            colors = TERMINAL_THEMES.get(theme_name, TERMINAL_THEMES["Beyaz (Varsayılan)"])
+
+            txt = ctk.CTkTextbox(
+                box_frame, 
+                font=ctk.CTkFont(family="Consolas", size=13), 
+                height=200, 
+                fg_color=colors["fg_color"], 
+                text_color=colors["text_color"]
+            )
             txt.pack(fill="both", expand=True, padx=10, pady=10)
             self.textboxes.append({"server": srv, "textbox": txt})
 
@@ -233,14 +251,89 @@ class BulkSSHFrame(ctk.CTkFrame):
         textbox.insert("end", f"{output}\n")
         textbox.see("end")
 
+
 class SingleSSHFrame(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, corner_radius=10)
-        self.label = ctk.CTkLabel(self, text="Tekli Kontrol", font=ctk.CTkFont(size=24, weight="bold"))
-        self.label.pack(pady=20, padx=20, anchor="w")
-        self.terminal_text = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Consolas", size=14), fg_color="#1e1e1e", text_color="#00ff00")
-        self.terminal_text.pack(fill="both", expand=True, padx=20, pady=20)
-        self.terminal_text.insert("end", "root@server:~$ (Tekli SSH yakında eklenecek)\n")
+        
+        self.top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.top_frame.pack(fill="x", pady=20, padx=20)
+        
+        self.label = ctk.CTkLabel(self.top_frame, text="Tekli Kontrol", font=ctk.CTkFont(size=24, weight="bold"))
+        self.label.pack(side="left")
+
+        # Sunucu Seçimi
+        self.server_var = ctk.StringVar(value="")
+        self.server_dropdown = ctk.CTkOptionMenu(
+            self.top_frame, 
+            variable=self.server_var,
+            command=self.on_server_select
+        )
+        self.server_dropdown.pack(side="right", padx=10)
+
+        self.cmd_entry = ctk.CTkEntry(self, placeholder_text="Seçili sunucuya komut yazın ve Enter'a basın")
+        self.cmd_entry.pack(fill="x", padx=20, pady=(0, 10))
+        self.cmd_entry.bind("<Return>", self.send_command)
+
+        # Terminal Görünümlü Alan (Teması sunucuya göre değişecek)
+        self.terminal_text = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Consolas", size=14))
+        self.terminal_text.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self.terminal_text.insert("end", "Sunucu seçin...\n")
+        
+        self.selected_server = None
+
+    def on_show(self):
+        servers = self.master.server_manager.servers
+        if not servers:
+            self.server_dropdown.configure(values=["Sunucu Bulunamadı"])
+            self.server_dropdown.set("Sunucu Bulunamadı")
+            self.selected_server = None
+            return
+
+        names = [f"{s['name']} ({s['ip']})" for s in servers]
+        self.server_dropdown.configure(values=names)
+        
+        current_val = self.server_var.get()
+        if current_val not in names:
+            self.server_dropdown.set(names[0])
+            self.on_server_select(names[0])
+        else:
+            self.on_server_select(current_val)
+
+    def on_server_select(self, choice):
+        if choice == "Sunucu Bulunamadı": return
+        servers = self.master.server_manager.servers
+        for srv in servers:
+            if f"{srv['name']} ({srv['ip']})" == choice:
+                self.selected_server = srv
+                self.apply_theme(srv)
+                self.terminal_text.delete("1.0", "end")
+                self.terminal_text.insert("end", f"{srv['name']} bağlantısı hazır.\nroot@{srv['ip']}:~$ ")
+                break
+
+    def apply_theme(self, srv):
+        theme_name = srv.get("theme", "Beyaz (Varsayılan)")
+        colors = TERMINAL_THEMES.get(theme_name, TERMINAL_THEMES["Beyaz (Varsayılan)"])
+        self.terminal_text.configure(fg_color=colors["fg_color"], text_color=colors["text_color"])
+
+    def send_command(self, event=None):
+        cmd = self.cmd_entry.get().strip()
+        if not cmd or not self.selected_server: return
+        self.cmd_entry.delete(0, 'end')
+
+        srv = self.selected_server
+        self.terminal_text.insert("end", f"{cmd}\n")
+        self.terminal_text.see("end")
+        self.master.run_async_task(self.async_ssh_command(srv, cmd))
+
+    async def async_ssh_command(self, server, cmd):
+        output = await asyncio.to_thread(run_ssh_command_sync, server, cmd)
+        self.master.after(0, lambda: self._update_textbox(output, server['ip']))
+
+    def _update_textbox(self, output, ip):
+        self.terminal_text.insert("end", f"{output}\nroot@{ip}:~$ ")
+        self.terminal_text.see("end")
+
 
 class ManagementFrame(ctk.CTkFrame):
     def __init__(self, master):
@@ -266,40 +359,46 @@ class ManagementFrame(ctk.CTkFrame):
             item = ctk.CTkFrame(self.list_frame)
             item.pack(fill="x", pady=5)
             
-            lbl_tag = ctk.CTkLabel(item, text="■", text_color=srv.get("color", "red"), font=ctk.CTkFont(size=20))
+            lbl_tag = ctk.CTkLabel(item, text="■", text_color=srv.get("color", "gray"), font=ctk.CTkFont(size=20))
             lbl_tag.pack(side="left", padx=10, pady=10)
 
-            lbl = ctk.CTkLabel(item, text=f"{srv['name']} | IP: {srv['ip']} | User: {srv['username']}")
+            theme_text = srv.get('theme', 'Beyaz (Varsayılan)')
+            lbl = ctk.CTkLabel(item, text=f"{srv['name']} | IP: {srv['ip']} | Tema: {theme_text}")
             lbl.pack(side="left", padx=10, pady=10)
 
     def open_add_dialog(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Sunucu Ekle")
-        dialog.geometry("400x500")
+        dialog.geometry("400x550")
         dialog.transient(self.master)
         dialog.grab_set()
 
-        ctk.CTkLabel(dialog, text="Sunucu Adı (örn: Web Server):").pack(pady=(20, 0), padx=20, anchor="w")
+        ctk.CTkLabel(dialog, text="Sunucu Adı (örn: Web Server):").pack(pady=(15, 0), padx=20, anchor="w")
         entry_name = ctk.CTkEntry(dialog)
         entry_name.pack(fill="x", padx=20, pady=5)
 
-        ctk.CTkLabel(dialog, text="IP Adresi:").pack(pady=(10, 0), padx=20, anchor="w")
+        ctk.CTkLabel(dialog, text="IP Adresi:").pack(pady=(5, 0), padx=20, anchor="w")
         entry_ip = ctk.CTkEntry(dialog)
         entry_ip.pack(fill="x", padx=20, pady=5)
 
-        ctk.CTkLabel(dialog, text="Port:").pack(pady=(10, 0), padx=20, anchor="w")
+        ctk.CTkLabel(dialog, text="Port:").pack(pady=(5, 0), padx=20, anchor="w")
         entry_port = ctk.CTkEntry(dialog)
         entry_port.insert(0, "22")
         entry_port.pack(fill="x", padx=20, pady=5)
 
-        ctk.CTkLabel(dialog, text="Kullanıcı Adı:").pack(pady=(10, 0), padx=20, anchor="w")
+        ctk.CTkLabel(dialog, text="Kullanıcı Adı:").pack(pady=(5, 0), padx=20, anchor="w")
         entry_user = ctk.CTkEntry(dialog)
         entry_user.insert(0, "root")
         entry_user.pack(fill="x", padx=20, pady=5)
 
-        ctk.CTkLabel(dialog, text="Şifre:").pack(pady=(10, 0), padx=20, anchor="w")
+        ctk.CTkLabel(dialog, text="Şifre:").pack(pady=(5, 0), padx=20, anchor="w")
         entry_pass = ctk.CTkEntry(dialog, show="*")
         entry_pass.pack(fill="x", padx=20, pady=5)
+
+        ctk.CTkLabel(dialog, text="Özel Terminal Teması:").pack(pady=(5, 0), padx=20, anchor="w")
+        theme_var = ctk.StringVar(value="Beyaz (Varsayılan)")
+        theme_menu = ctk.CTkOptionMenu(dialog, variable=theme_var, values=list(TERMINAL_THEMES.keys()))
+        theme_menu.pack(fill="x", padx=20, pady=5)
 
         def save():
             srv = {
@@ -308,7 +407,8 @@ class ManagementFrame(ctk.CTkFrame):
                 "port": entry_port.get(),
                 "username": entry_user.get(),
                 "password": entry_pass.get(),
-                "color": "#00ff00" # Örnek yeşil
+                "color": "#1f538d",
+                "theme": theme_var.get()
             }
             if srv["name"] and srv["ip"]:
                 self.master.server_manager.add_server(srv)
@@ -316,17 +416,39 @@ class ManagementFrame(ctk.CTkFrame):
                 dialog.destroy()
 
         btn_save = ctk.CTkButton(dialog, text="Kaydet", command=save)
-        btn_save.pack(pady=20)
+        btn_save.pack(pady=15)
+
 
 class SettingsFrame(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, corner_radius=10)
         self.label = ctk.CTkLabel(self, text="Ayarlar", font=ctk.CTkFont(size=24, weight="bold"))
         self.label.pack(pady=20, padx=20, anchor="w")
+
+        # Global Tema Seçimi
+        self.theme_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.theme_frame.pack(fill="x", padx=20, pady=10)
+        
+        ctk.CTkLabel(self.theme_frame, text="Uygulama Görünümü (Genel Tema):", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        
+        self.app_theme_var = ctk.StringVar(value="Light")
+        self.app_theme_menu = ctk.CTkOptionMenu(
+            self.theme_frame, 
+            variable=self.app_theme_var, 
+            values=["Light", "Dark", "System"],
+            command=self.change_app_theme
+        )
+        self.app_theme_menu.pack(anchor="w", pady=5)
+
+        # Export/Import
+        ctk.CTkLabel(self, text="Veri Yönetimi:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(20,5))
         self.btn_export = ctk.CTkButton(self, text="JSON Dışa Aktar (Export)")
-        self.btn_export.pack(padx=20, pady=10, anchor="w")
+        self.btn_export.pack(padx=20, pady=5, anchor="w")
         self.btn_import = ctk.CTkButton(self, text="JSON İçe Aktar (Import)")
-        self.btn_import.pack(padx=20, pady=10, anchor="w")
+        self.btn_import.pack(padx=20, pady=5, anchor="w")
+
+    def change_app_theme(self, choice):
+        ctk.set_appearance_mode(choice)
 
 if __name__ == "__main__":
     app = App()

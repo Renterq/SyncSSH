@@ -2,21 +2,40 @@ import os
 import json
 import asyncio
 import threading
-import math
+import datetime
 import customtkinter as ctk
 import paramiko
 
-# Genel CustomTkinter Görünüm Ayarları
-ctk.set_appearance_mode("Light") # İstek üzerine varsayılan olarak aydınlık mod
+# --- GÖRÜNÜM AYARLARI ---
+ctk.set_appearance_mode("System") # İlk açılışta sistem teması
 ctk.set_default_color_theme("blue")
 
-# Desteklenen KDE / Terminal Temaları
 TERMINAL_THEMES = {
-    "Beyaz (Varsayılan)": {"fg_color": "#ffffff", "text_color": "#000000"},
-    "Karanlık (Siyah/Beyaz)": {"fg_color": "#1e1e1e", "text_color": "#ffffff"},
-    "Hacker (Siyah/Yeşil)": {"fg_color": "#0d1117", "text_color": "#00ff00"},
+    "Beyaz (Arka Plan Beyaz/Yazı Siyah)": {"fg_color": "#ffffff", "text_color": "#000000"},
+    "Karanlık (Siyah/Beyaz)": {"fg_color": "#000000", "text_color": "#ffffff"},
+    "Hacker (Siyah/Yeşil)": {"fg_color": "#000000", "text_color": "#00ff00"},
     "Okyanus (Mavi/Beyaz)": {"fg_color": "#1e2a3a", "text_color": "#e0f7fa"}
 }
+
+# --- YÖNETİCİ SINIFLARI ---
+class SettingsManager:
+    def __init__(self, filename="settings.json"):
+        self.filename = filename
+        self.settings = {"notify_days": 3, "app_theme": "System"}
+        self.load()
+
+    def load(self):
+        if os.path.exists(self.filename):
+            try:
+                with open(self.filename, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.settings.update(data)
+            except:
+                pass
+
+    def save(self):
+        with open(self.filename, "w", encoding="utf-8") as f:
+            json.dump(self.settings, f, indent=4)
 
 class ServerManager:
     def __init__(self, filename="servers.json"):
@@ -37,7 +56,21 @@ class ServerManager:
             json.dump(self.servers, f, indent=4)
             
     def add_server(self, server_data):
+        # Assign a simple unique id if missing
+        if "id" not in server_data:
+            server_data["id"] = str(datetime.datetime.now().timestamp())
         self.servers.append(server_data)
+        self.save()
+
+    def update_server(self, server_id, new_data):
+        for i, srv in enumerate(self.servers):
+            if srv.get("id") == server_id:
+                self.servers[i].update(new_data)
+                break
+        self.save()
+
+    def delete_server(self, server_id):
+        self.servers = [s for s in self.servers if s.get("id") != server_id]
         self.save()
 
 def run_ssh_command_sync(server, cmd):
@@ -62,6 +95,7 @@ def run_ssh_command_sync(server, cmd):
     except Exception as e:
         return f"Bağlantı Hatası: {str(e)}"
 
+# --- ANA UYGULAMA ---
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -71,18 +105,23 @@ class App(ctk.CTk):
         self.minsize(900, 600)
 
         self.server_manager = ServerManager()
+        self.settings_manager = SettingsManager()
+        
+        # Apply saved theme
+        ctk.set_appearance_mode(self.settings_manager.settings["app_theme"])
 
         # Asenkron Loop
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.start_asyncio_loop, args=(self.loop,), daemon=True)
         self.thread.start()
 
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=0) # Top bar row
+        self.grid_rowconfigure(1, weight=1) # Main content row
         self.grid_columnconfigure(1, weight=1)
 
-        # Sidebar
+        # --- Sidebar ---
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self.sidebar_frame.grid_rowconfigure(6, weight=1)
 
         self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="VDS Manager", font=ctk.CTkFont(size=20, weight="bold"))
@@ -103,7 +142,15 @@ class App(ctk.CTk):
         self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="Ayarlar", command=self.show_settings)
         self.btn_settings.grid(row=5, column=0, padx=20, pady=10)
 
-        # Frames
+        # --- Top Bar (Bildirimler İçin) ---
+        self.top_bar = ctk.CTkFrame(self, height=40, corner_radius=0, fg_color="transparent")
+        self.top_bar.grid(row=0, column=1, sticky="ew", padx=20, pady=(10, 0))
+        
+        self.notification_btn = ctk.CTkButton(self.top_bar, text="🔔 Bildirimler (0)", fg_color="transparent", text_color=("black", "white"), border_width=1, command=self.show_notifications_dialog)
+        self.notification_btn.pack(side="right")
+        self.current_alerts = []
+
+        # --- Frames ---
         self.frames = {}
         self.frames["dashboard"] = DashboardFrame(self)
         self.frames["bulk"] = BulkSSHFrame(self)
@@ -112,9 +159,52 @@ class App(ctk.CTk):
         self.frames["settings"] = SettingsFrame(self)
 
         for frame in self.frames.values():
-            frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+            frame.grid(row=1, column=1, sticky="nsew", padx=20, pady=10)
 
         self.show_dashboard()
+        self.check_notifications()
+
+    def check_notifications(self):
+        today = datetime.date.today()
+        notify_days = int(self.settings_manager.settings.get("notify_days", 3))
+        alerts = []
+        
+        for srv in self.server_manager.servers:
+            exp_date_str = srv.get("expiration_date")
+            if exp_date_str:
+                try:
+                    exp_date = datetime.datetime.strptime(exp_date_str, "%Y-%m-%d").date()
+                    diff = (exp_date - today).days
+                    if 0 <= diff <= notify_days:
+                        alerts.append(f"⚠️ {srv['name']}: Süresi dolmasına {diff} gün kaldı! ({exp_date_str})")
+                    elif diff < 0:
+                        alerts.append(f"❌ {srv['name']}: Süresi DOLDU! ({-diff} gün geçti)")
+                except Exception as e:
+                    pass
+        
+        self.current_alerts = alerts
+        if alerts:
+            self.notification_btn.configure(text=f"🔔 Bildirimler ({len(alerts)})", fg_color="#8B0000", text_color="white", border_width=0)
+        else:
+            self.notification_btn.configure(text="🔔 Bildirim Yok", fg_color="transparent", text_color=("black", "white"), border_width=1)
+
+    def show_notifications_dialog(self):
+        if not self.current_alerts:
+            return
+            
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Süresi Yaklaşan Sunucular")
+        dialog.geometry("400x300")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Bildirimler", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=10)
+        
+        scroll = ctk.CTkScrollableFrame(dialog)
+        scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        for alert in self.current_alerts:
+            ctk.CTkLabel(scroll, text=alert, text_color="red", font=ctk.CTkFont(weight="bold"), wraplength=350).pack(pady=5, anchor="w")
 
     def start_asyncio_loop(self, loop):
         asyncio.set_event_loop(loop)
@@ -174,7 +264,6 @@ class DashboardFrame(ctk.CTkFrame):
             ram_pb.pack(fill="x", padx=20, pady=5)
             ram_pb.set(0.0) 
 
-
 class BulkSSHFrame(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, corner_radius=10)
@@ -218,8 +307,8 @@ class BulkSSHFrame(ctk.CTkFrame):
             lbl = ctk.CTkLabel(box_frame, text=f"{srv['name']} ({srv['ip']})", font=ctk.CTkFont(weight="bold"))
             lbl.pack(pady=(5,0))
 
-            theme_name = srv.get("theme", "Beyaz (Varsayılan)")
-            colors = TERMINAL_THEMES.get(theme_name, TERMINAL_THEMES["Beyaz (Varsayılan)"])
+            theme_name = srv.get("theme", "Karanlık (Siyah/Beyaz)")
+            colors = TERMINAL_THEMES.get(theme_name, TERMINAL_THEMES["Karanlık (Siyah/Beyaz)"])
 
             txt = ctk.CTkTextbox(
                 box_frame, 
@@ -251,7 +340,6 @@ class BulkSSHFrame(ctk.CTkFrame):
         textbox.insert("end", f"{output}\n")
         textbox.see("end")
 
-
 class SingleSSHFrame(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, corner_radius=10)
@@ -262,7 +350,6 @@ class SingleSSHFrame(ctk.CTkFrame):
         self.label = ctk.CTkLabel(self.top_frame, text="Tekli Kontrol", font=ctk.CTkFont(size=24, weight="bold"))
         self.label.pack(side="left")
 
-        # Sunucu Seçimi
         self.server_var = ctk.StringVar(value="")
         self.server_dropdown = ctk.CTkOptionMenu(
             self.top_frame, 
@@ -275,7 +362,6 @@ class SingleSSHFrame(ctk.CTkFrame):
         self.cmd_entry.pack(fill="x", padx=20, pady=(0, 10))
         self.cmd_entry.bind("<Return>", self.send_command)
 
-        # Terminal Görünümlü Alan (Teması sunucuya göre değişecek)
         self.terminal_text = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Consolas", size=14))
         self.terminal_text.pack(fill="both", expand=True, padx=20, pady=(0, 20))
         self.terminal_text.insert("end", "Sunucu seçin...\n")
@@ -312,8 +398,8 @@ class SingleSSHFrame(ctk.CTkFrame):
                 break
 
     def apply_theme(self, srv):
-        theme_name = srv.get("theme", "Beyaz (Varsayılan)")
-        colors = TERMINAL_THEMES.get(theme_name, TERMINAL_THEMES["Beyaz (Varsayılan)"])
+        theme_name = srv.get("theme", "Karanlık (Siyah/Beyaz)")
+        colors = TERMINAL_THEMES.get(theme_name, TERMINAL_THEMES["Karanlık (Siyah/Beyaz)"])
         self.terminal_text.configure(fg_color=colors["fg_color"], text_color=colors["text_color"])
 
     def send_command(self, event=None):
@@ -334,16 +420,16 @@ class SingleSSHFrame(ctk.CTkFrame):
         self.terminal_text.insert("end", f"{output}\nroot@{ip}:~$ ")
         self.terminal_text.see("end")
 
-
 class ManagementFrame(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, corner_radius=10)
         self.label = ctk.CTkLabel(self, text="Sunucu Yönetimi", font=ctk.CTkFont(size=24, weight="bold"))
         self.label.pack(pady=20, padx=20, anchor="w")
 
-        self.btn_add = ctk.CTkButton(self, text="+ Yeni Sunucu Ekle", command=self.open_add_dialog)
+        self.btn_add = ctk.CTkButton(self, text="+ Yeni Sunucu Ekle", command=lambda: self.open_server_dialog())
         self.btn_add.pack(padx=20, pady=(0, 10), anchor="e")
 
+        # Scrollable Frame (Gerektiğinde scrollbar çıkarır)
         self.list_frame = ctk.CTkScrollableFrame(self)
         self.list_frame.pack(fill="both", expand=True, padx=20, pady=10)
         self.refresh_list()
@@ -362,18 +448,57 @@ class ManagementFrame(ctk.CTkFrame):
             lbl_tag = ctk.CTkLabel(item, text="■", text_color=srv.get("color", "gray"), font=ctk.CTkFont(size=20))
             lbl_tag.pack(side="left", padx=10, pady=10)
 
-            theme_text = srv.get('theme', 'Beyaz (Varsayılan)')
-            lbl = ctk.CTkLabel(item, text=f"{srv['name']} | IP: {srv['ip']} | Tema: {theme_text}")
+            exp = srv.get("expiration_date", "Belirtilmedi")
+            lbl = ctk.CTkLabel(item, text=f"{srv['name']} | IP: {srv['ip']} | Bitiş: {exp}")
             lbl.pack(side="left", padx=10, pady=10)
 
-    def open_add_dialog(self):
+            # Buton Grubu
+            btn_frame = ctk.CTkFrame(item, fg_color="transparent")
+            btn_frame.pack(side="right", padx=10, pady=5)
+
+            btn_delete = ctk.CTkButton(btn_frame, text="Kaldır", width=60, fg_color="#b30000", hover_color="#800000", command=lambda s=srv: self.delete_server(s))
+            btn_delete.pack(side="right", padx=5)
+
+            btn_edit = ctk.CTkButton(btn_frame, text="Düzenle", width=60, command=lambda s=srv: self.open_server_dialog(s))
+            btn_edit.pack(side="right", padx=5)
+
+            btn_date = ctk.CTkButton(btn_frame, text="Tarih", width=60, fg_color="#e68a00", hover_color="#cc7a00", command=lambda s=srv: self.open_date_dialog(s))
+            btn_date.pack(side="right", padx=5)
+
+    def delete_server(self, srv):
+        self.master.server_manager.delete_server(srv.get("id"))
+        self.refresh_list()
+        self.master.check_notifications()
+
+    def open_date_dialog(self, srv):
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Sunucu Ekle")
+        dialog.title("Tarih Ayarla")
+        dialog.geometry("300x200")
+        dialog.transient(self.master)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text=f"{srv['name']} için Bitiş Tarihi:\n(Format: YYYY-AA-GG)").pack(pady=(20,10))
+        entry_date = ctk.CTkEntry(dialog)
+        entry_date.insert(0, srv.get("expiration_date", ""))
+        entry_date.pack(fill="x", padx=40, pady=10)
+
+        def save_date():
+            self.master.server_manager.update_server(srv["id"], {"expiration_date": entry_date.get()})
+            self.refresh_list()
+            self.master.check_notifications()
+            dialog.destroy()
+
+        ctk.CTkButton(dialog, text="Kaydet", command=save_date).pack(pady=10)
+
+    def open_server_dialog(self, server_to_edit=None):
+        dialog = ctk.CTkToplevel(self)
+        title = "Sunucu Düzenle" if server_to_edit else "Sunucu Ekle"
+        dialog.title(title)
         dialog.geometry("400x550")
         dialog.transient(self.master)
         dialog.grab_set()
 
-        ctk.CTkLabel(dialog, text="Sunucu Adı (örn: Web Server):").pack(pady=(15, 0), padx=20, anchor="w")
+        ctk.CTkLabel(dialog, text="Sunucu Adı:").pack(pady=(15, 0), padx=20, anchor="w")
         entry_name = ctk.CTkEntry(dialog)
         entry_name.pack(fill="x", padx=20, pady=5)
 
@@ -383,25 +508,35 @@ class ManagementFrame(ctk.CTkFrame):
 
         ctk.CTkLabel(dialog, text="Port:").pack(pady=(5, 0), padx=20, anchor="w")
         entry_port = ctk.CTkEntry(dialog)
-        entry_port.insert(0, "22")
         entry_port.pack(fill="x", padx=20, pady=5)
 
         ctk.CTkLabel(dialog, text="Kullanıcı Adı:").pack(pady=(5, 0), padx=20, anchor="w")
         entry_user = ctk.CTkEntry(dialog)
-        entry_user.insert(0, "root")
         entry_user.pack(fill="x", padx=20, pady=5)
 
         ctk.CTkLabel(dialog, text="Şifre:").pack(pady=(5, 0), padx=20, anchor="w")
         entry_pass = ctk.CTkEntry(dialog, show="*")
         entry_pass.pack(fill="x", padx=20, pady=5)
 
-        ctk.CTkLabel(dialog, text="Özel Terminal Teması:").pack(pady=(5, 0), padx=20, anchor="w")
-        theme_var = ctk.StringVar(value="Beyaz (Varsayılan)")
+        ctk.CTkLabel(dialog, text="Terminal Teması:").pack(pady=(5, 0), padx=20, anchor="w")
+        theme_var = ctk.StringVar(value="Karanlık (Siyah/Beyaz)")
         theme_menu = ctk.CTkOptionMenu(dialog, variable=theme_var, values=list(TERMINAL_THEMES.keys()))
         theme_menu.pack(fill="x", padx=20, pady=5)
 
+        # Eğer düzenleme modundaysak, mevcut bilgileri doldur
+        if server_to_edit:
+            entry_name.insert(0, server_to_edit.get("name", ""))
+            entry_ip.insert(0, server_to_edit.get("ip", ""))
+            entry_port.insert(0, server_to_edit.get("port", "22"))
+            entry_user.insert(0, server_to_edit.get("username", "root"))
+            entry_pass.insert(0, server_to_edit.get("password", ""))
+            theme_var.set(server_to_edit.get("theme", "Karanlık (Siyah/Beyaz)"))
+        else:
+            entry_port.insert(0, "22")
+            entry_user.insert(0, "root")
+
         def save():
-            srv = {
+            srv_data = {
                 "name": entry_name.get(),
                 "ip": entry_ip.get(),
                 "port": entry_port.get(),
@@ -410,9 +545,20 @@ class ManagementFrame(ctk.CTkFrame):
                 "color": "#1f538d",
                 "theme": theme_var.get()
             }
-            if srv["name"] and srv["ip"]:
-                self.master.server_manager.add_server(srv)
+            # Tarihi kaybetmemek için ID ve Date ekle
+            if server_to_edit:
+                srv_data["id"] = server_to_edit["id"]
+                if "expiration_date" in server_to_edit:
+                    srv_data["expiration_date"] = server_to_edit["expiration_date"]
+
+            if srv_data["name"] and srv_data["ip"]:
+                if server_to_edit:
+                    self.master.server_manager.update_server(server_to_edit["id"], srv_data)
+                else:
+                    self.master.server_manager.add_server(srv_data)
+                
                 self.refresh_list()
+                self.master.check_notifications()
                 dialog.destroy()
 
         btn_save = ctk.CTkButton(dialog, text="Kaydet", command=save)
@@ -431,7 +577,7 @@ class SettingsFrame(ctk.CTkFrame):
         
         ctk.CTkLabel(self.theme_frame, text="Uygulama Görünümü (Genel Tema):", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
-        self.app_theme_var = ctk.StringVar(value="Light")
+        self.app_theme_var = ctk.StringVar(value=self.master.settings_manager.settings.get("app_theme", "System"))
         self.app_theme_menu = ctk.CTkOptionMenu(
             self.theme_frame, 
             variable=self.app_theme_var, 
@@ -439,6 +585,18 @@ class SettingsFrame(ctk.CTkFrame):
             command=self.change_app_theme
         )
         self.app_theme_menu.pack(anchor="w", pady=5)
+
+        # Bildirim Ayarları
+        ctk.CTkLabel(self.theme_frame, text="Son Gün Bildirimi (Kaç gün kala uyarsın?):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(20,0))
+        
+        self.notify_days_var = ctk.StringVar(value=str(self.master.settings_manager.settings.get("notify_days", 3)))
+        self.notify_days_menu = ctk.CTkOptionMenu(
+            self.theme_frame,
+            variable=self.notify_days_var,
+            values=["1", "2", "3", "4", "5", "10"],
+            command=self.change_notify_days
+        )
+        self.notify_days_menu.pack(anchor="w", pady=5)
 
         # Export/Import
         ctk.CTkLabel(self, text="Veri Yönetimi:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(20,5))
@@ -449,6 +607,13 @@ class SettingsFrame(ctk.CTkFrame):
 
     def change_app_theme(self, choice):
         ctk.set_appearance_mode(choice)
+        self.master.settings_manager.settings["app_theme"] = choice
+        self.master.settings_manager.save()
+
+    def change_notify_days(self, choice):
+        self.master.settings_manager.settings["notify_days"] = int(choice)
+        self.master.settings_manager.save()
+        self.master.check_notifications()
 
 if __name__ == "__main__":
     app = App()

@@ -5,7 +5,6 @@ import threading
 import datetime
 from typing import TYPE_CHECKING, Any, Dict
 import customtkinter as ctk
-# noinspection PyPackageRequirements
 import paramiko
 import tkcalendar
 import webbrowser

@@ -45,7 +45,6 @@ class CircularProgressbar(ctk.CTkCanvas):
 
     def draw(self) -> None:
         self.delete("arc")
-        # Background arc
         self.create_arc(self.width, self.width, self.radius*2 - self.width, self.radius*2 - self.width, 
                         start=0, extent=360, style="arc", width=self.width, outline="#555555", tags="arc")
         # Foreground arc

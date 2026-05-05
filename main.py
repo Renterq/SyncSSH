@@ -27,7 +27,6 @@ SERVER_COLORS = [
     "#e76f51", "#8338ec", "#3a86ff", "#ff006e", "#00b4d8"
 ]
 
-# --- ÖZEL BİLEŞENLER ---
 class CircularProgressbar(ctk.CTkCanvas):
     def __init__(self, master, radius=50, width=10, fg_color="#1f538d", bg_color="#2b2b2b", text_color="white", **kwargs):
         super().__init__(master, width=radius*2, height=radius*2, highlightthickness=0, bg=bg_color, **kwargs)

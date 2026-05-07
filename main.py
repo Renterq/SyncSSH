@@ -178,7 +178,6 @@ class ServerManager:
         self.save()
 
 
-# --- ANA UYGULAMA ---
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()

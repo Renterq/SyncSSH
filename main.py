@@ -431,7 +431,7 @@ class DashboardFrame(ctk.CTkFrame):
             for srv in self.app.server_manager.servers:
                 self.app.run_async_task(self.fetch_and_update(srv))
                 
-            await asyncio.sleep(2) # Give a short buffer for fetches
+            await asyncio.sleep(2)
             
             for remaining in range(10, 0, -1):
                 self.app.after(0, update_lbl, f"Sonraki yenileme: {remaining}sn")

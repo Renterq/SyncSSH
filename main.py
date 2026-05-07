@@ -52,7 +52,6 @@ class CircularProgressbar(ctk.CTkCanvas):
                         start=90, extent=extent, style="arc", width=self.width, outline=self.fg_color, tags="arc")
         self.itemconfig(self.text_label, text=f"{int(self.value)}%")
 
-# --- YÖNETİCİ SINIFLARI ---
 class SSHConnectionManager:
     def __init__(self) -> None:
         self.clients: Dict[str, paramiko.SSHClient] = {}

@@ -463,7 +463,6 @@ class DashboardFrame(ctk.CTkFrame):
             except (ValueError, IndexError):
                 error_msg = "Veri Alınamadı"
 
-        # Update Live Stats to server dict
         if not error_msg:
             for server in self.app.server_manager.servers:
                 if f"{server.get('id')}" == f"{srv.get('id')}":

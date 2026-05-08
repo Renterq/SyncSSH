@@ -946,7 +946,6 @@ class SettingsFrame(ctk.CTkFrame):
         self.btn_import = ctk.CTkButton(self, text="JSON İçe Aktar (Import)")
         self.btn_import.pack(padx=20, pady=5, anchor="w")
 
-        # GitHub Button
         self.github_btn = ctk.CTkButton(
             self, 
             text="🐙 GitHub: SyncSSH", 

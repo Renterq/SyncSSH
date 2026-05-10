@@ -4,8 +4,6 @@ SyncSSH, birden fazla Linux sunucusunu tek bir modern arayüz üzerinden eşzama
 
 Ağ yöneticileri, siber güvenlik uzmanları ve sistem mühendisleri için geliştirilmiş olan bu araç; sunucularınızın anlık kaynak tüketimlerini takip ederken, aynı anda onlarca makineye toplu komut gönderme imkanı sunar.
 
-🔗 **Proje Bağlantısı:** [https://github.com/Renterq/SyncSSH](https://github.com/Renterq/SyncSSH)
-
 ## ✨ Öne Çıkan Özellikler
 
 * **🔒 Yüksek Güvenlikli Kasa (Vault):** Sunucu kimlik bilgileriniz düz metin olarak saklanmaz. Tüm verileriniz, belirlediğiniz bir ana şifre kullanılarak **AES (Fernet)** mimarisiyle şifrelenir. 

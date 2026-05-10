@@ -5,13 +5,20 @@ import threading
 import datetime
 from typing import TYPE_CHECKING, Any, Dict
 import customtkinter as ctk
+# noinspection PyPackageRequirements
 import paramiko
 import tkcalendar
 import webbrowser
+import base64
+import keyring
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.fernet import Fernet, InvalidToken
 
 if TYPE_CHECKING:
     pass
 
+# --- GÖRÜNÜM AYARLARI ---
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -27,6 +34,7 @@ SERVER_COLORS = [
     "#e76f51", "#8338ec", "#3a86ff", "#ff006e", "#00b4d8"
 ]
 
+# --- ÖZEL BİLEŞENLER ---
 class CircularProgressbar(ctk.CTkCanvas):
     def __init__(self, master, radius=50, width=10, fg_color="#1f538d", bg_color="#2b2b2b", text_color="white", **kwargs):
         super().__init__(master, width=radius*2, height=radius*2, highlightthickness=0, bg=bg_color, **kwargs)
@@ -45,13 +53,85 @@ class CircularProgressbar(ctk.CTkCanvas):
 
     def draw(self) -> None:
         self.delete("arc")
+        # Background arc
         self.create_arc(self.width, self.width, self.radius*2 - self.width, self.radius*2 - self.width, 
                         start=0, extent=360, style="arc", width=self.width, outline="#555555", tags="arc")
+        # Foreground arc
         extent = -(self.value / 100) * 359.9
         self.create_arc(self.width, self.width, self.radius*2 - self.width, self.radius*2 - self.width, 
                         start=90, extent=extent, style="arc", width=self.width, outline=self.fg_color, tags="arc")
         self.itemconfig(self.text_label, text=f"{int(self.value)}%")
 
+# --- GÜVENLİK (VAULT) SINIFI ---
+class VaultManager:
+    def __init__(self, settings_manager: 'SettingsManager', app_name="SyncSSH_Vault") -> None:
+        self.settings = settings_manager
+        self.app_name = app_name
+        self.fernet = None
+
+    def is_setup(self) -> bool:
+        return "vault_salt" in self.settings.settings
+
+    def setup_vault(self, master_password: str, remember: bool = False) -> None:
+        salt = os.urandom(16)
+        self.settings.settings["vault_salt"] = base64.b64encode(salt).decode('utf-8')
+        if remember:
+            self.settings.settings["vault_remember"] = True
+            self.save_to_keyring(master_password)
+        else:
+            self.settings.settings["vault_remember"] = False
+            self.delete_from_keyring()
+        self.settings.save()
+        self._derive_key(master_password, salt)
+
+    def unlock_vault(self, master_password: str) -> bool:
+        try:
+            salt_b64 = str(self.settings.settings.get("vault_salt", ""))
+            if not salt_b64: return False
+            salt = base64.b64decode(salt_b64)
+            self._derive_key(master_password, salt)
+            return True
+        except Exception as e:
+            print(f"Unlock error: {e}")
+            return False
+
+    def _derive_key(self, password: str, salt: bytes) -> None:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=480000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+        self.fernet = Fernet(key)
+
+    def encrypt(self, data: str) -> bytes:
+        if not self.fernet: raise Exception("Vault is locked")
+        return self.fernet.encrypt(data.encode('utf-8'))
+
+    def decrypt(self, data: bytes) -> str:
+        if not self.fernet: raise Exception("Vault is locked")
+        return self.fernet.decrypt(data).decode('utf-8')
+
+    def get_from_keyring(self) -> str | None:
+        try:
+            return keyring.get_password(self.app_name, "master_key")
+        except Exception as _: # noinspection PyBroadException
+            return None
+
+    def save_to_keyring(self, password: str) -> None:
+        try:
+            keyring.set_password(self.app_name, "master_key", password)
+        except Exception as e:
+            print(f"Keyring save error: {e}")
+
+    def delete_from_keyring(self) -> None:
+        try:
+            keyring.delete_password(self.app_name, "master_key")
+        except Exception as _: # noinspection PyBroadException
+            pass
+
+# --- YÖNETİCİ SINIFLARI ---
 class SSHConnectionManager:
     def __init__(self) -> None:
         self.clients: Dict[str, paramiko.SSHClient] = {}
@@ -131,33 +211,47 @@ class SettingsManager:
 
 
 class ServerManager:
-    def __init__(self, filename: str = "servers.json") -> None:
+    def __init__(self, vault: VaultManager, filename: str = "servers.json") -> None:
         self.filename = filename
+        self.vault = vault
         self.servers = []
         self.load()
 
     def load(self) -> None:
         if os.path.exists(self.filename):
             try:
-                with open(self.filename, "r", encoding="utf-8") as f:
-                    self.servers = json.load(f)
-                    
-                    needs_save = False
+                with open(self.filename, "rb") as f:
+                    raw_data = f.read()
+                
+                try:
+                    self.servers = json.loads(raw_data.decode('utf-8'))
+                    print("Eski (şifresiz) servers.json bulundu. Otomatik olarak şifreleniyor...")
                     for i, s in enumerate(self.servers):
                         if "id" not in s:
                             s["id"] = f"legacy_{i}_{datetime.datetime.now().timestamp()}"
-                            needs_save = True
-                    if needs_save:
-                        self.save()
-            except (OSError, json.JSONDecodeError) as e:
+                            
+                    self.save()
+                    return
+                except json.JSONDecodeError:
+                    pass
+
+                decrypted = self.vault.decrypt(raw_data)
+                self.servers = json.loads(decrypted)
+
+            except InvalidToken:
+                print("Vault decryption failed (Yanlış şifre veya bozuk dosya).")
+                self.servers = []
+            except Exception as e:
                 print(f"Servers load error: {e}")
                 self.servers = []
 
     def save(self) -> None:
         try:
-            with open(self.filename, "w", encoding="utf-8") as f:
-                json.dump(self.servers, f, indent=4)
-        except OSError as e:
+            json_str = json.dumps(self.servers, indent=4)
+            encrypted_data = self.vault.encrypt(json_str)
+            with open(self.filename, "wb") as f:
+                f.write(encrypted_data)
+        except Exception as e:
             print(f"Servers save error: {e}")
             
     def add_server(self, server_data: dict) -> None:
@@ -178,6 +272,101 @@ class ServerManager:
         self.save()
 
 
+class VaultDialogBase(ctk.CTkToplevel):
+    def __init__(self, master, vault: VaultManager, title_str: str):
+        super().__init__(master)
+        self.vault = vault
+        self.success = False
+        
+        self.title(title_str)
+        self.geometry("400x350")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 400) // 2
+        y = (self.winfo_screenheight() - 350) // 2
+        self.geometry(f"+{x}+{y}")
+        
+    def on_close(self):
+        self.success = False
+        self.destroy()
+
+class SetupVaultDialog(VaultDialogBase):
+    def __init__(self, master, vault: VaultManager):
+        super().__init__(master, vault, "SyncSSH - İlk Kurulum (Kasa)")
+        
+        ctk.CTkLabel(self, text="Güvenli Kasa Oluştur", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(20, 10))
+        ctk.CTkLabel(self, text="Sunucu bilgilerinizi şifrelemek için\nen az 8 haneli bir ana şifre belirleyin.", justify="center").pack(pady=(0, 20))
+        
+        self.pwd_entry = ctk.CTkEntry(self, show="*", placeholder_text="Ana Şifre (Min 8 Hane)", width=250)
+        self.pwd_entry.pack(pady=10)
+        
+        self.pwd_entry_confirm = ctk.CTkEntry(self, show="*", placeholder_text="Şifreyi Tekrar Girin", width=250)
+        self.pwd_entry_confirm.pack(pady=10)
+        
+        self.remember_var = ctk.BooleanVar(value=True)
+        self.remember_chk = ctk.CTkCheckBox(self, text="Beni Hatırla (Sistem Kasasına Kaydet)", variable=self.remember_var)
+        self.remember_chk.pack(pady=10)
+        
+        self.error_lbl = ctk.CTkLabel(self, text="", text_color="red")
+        self.error_lbl.pack()
+        
+        ctk.CTkButton(self, text="Oluştur ve Devam Et", command=self.submit).pack(pady=15)
+        
+    def submit(self):
+        p1 = self.pwd_entry.get()
+        p2 = self.pwd_entry_confirm.get()
+        if len(p1) < 8:
+            self.error_lbl.configure(text="Şifre en az 8 haneli olmalıdır!")
+            return
+        if p1 != p2:
+            self.error_lbl.configure(text="Şifreler uyuşmuyor!")
+            return
+            
+        try:
+            self.vault.setup_vault(p1, self.remember_var.get())
+            self.success = True
+            self.destroy()
+        except Exception as e:
+            self.error_lbl.configure(text=f"Hata: {e}")
+
+class UnlockVaultDialog(VaultDialogBase):
+    def __init__(self, master, vault: VaultManager):
+        super().__init__(master, vault, "SyncSSH - Kasa Kilidi")
+        
+        ctk.CTkLabel(self, text="Kasa Kilitli", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(20, 10))
+        ctk.CTkLabel(self, text="Sunucu bilgilerinize erişmek için\nana şifrenizi giriniz.", justify="center").pack(pady=(0, 20))
+        
+        self.pwd_entry = ctk.CTkEntry(self, show="*", placeholder_text="Ana Şifre", width=250)
+        self.pwd_entry.pack(pady=10)
+        self.pwd_entry.bind("<Return>", lambda e: self.submit())
+        
+        self.remember_var = ctk.BooleanVar(value=False)
+        self.remember_chk = ctk.CTkCheckBox(self, text="Beni Hatırla (Sistem Kasasına Kaydet)", variable=self.remember_var)
+        self.remember_chk.pack(pady=10)
+        
+        self.error_lbl = ctk.CTkLabel(self, text="", text_color="red")
+        self.error_lbl.pack()
+        
+        ctk.CTkButton(self, text="Kilidi Aç", command=self.submit).pack(pady=15)
+        
+    def submit(self):
+        pwd = self.pwd_entry.get()
+        if not pwd: return
+        
+        if self.vault.unlock_vault(pwd):
+            if self.remember_var.get():
+                self.vault.settings.settings["vault_remember"] = True
+                self.vault.settings.save()
+                self.vault.save_to_keyring(pwd)
+            self.success = True
+            self.destroy()
+        else:
+            self.error_lbl.configure(text="Şifre hatalı veya salt bozuk!")
+
+# --- ANA UYGULAMA ---
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -186,9 +375,13 @@ class App(ctk.CTk):
         self.geometry("1100x700")
         self.minsize(900, 600)
 
-        self.server_manager = ServerManager()
         self.settings_manager = SettingsManager()
+        self.vault = VaultManager(self.settings_manager)
+        self.server_manager = None
+        self.frames = {}
         self.ssh_manager = SSHConnectionManager()
+        
+        self.withdraw() # Hide window until vault is unlocked
         
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -240,6 +433,34 @@ class App(ctk.CTk):
         self.notification_btn.pack(side="right")
         self.current_alerts = []
 
+        # noinspection PyTypeChecker
+        self.after(100, self.check_vault)
+
+    def check_vault(self) -> None:
+        if not self.vault.is_setup():
+            dialog = SetupVaultDialog(self, self.vault)
+            self.wait_window(dialog)
+            if not dialog.success:
+                self.destroy()
+                return
+        else:
+            pwd = self.vault.get_from_keyring()
+            if pwd and self.settings_manager.settings.get("vault_remember"):
+                if self.vault.unlock_vault(pwd):
+                    self.init_servers()
+                    return
+            
+            dialog = UnlockVaultDialog(self, self.vault)
+            self.wait_window(dialog)
+            if not dialog.success:
+                self.destroy()
+                return
+                
+        self.init_servers()
+
+    def init_servers(self) -> None:
+        self.server_manager = ServerManager(self.vault)
+        
         self.frames = {
             "dashboard": DashboardFrame(self),
             "bulk": BulkSSHFrame(self),
@@ -252,6 +473,7 @@ class App(ctk.CTk):
             frame.grid(row=1, column=1, sticky="nsew", padx=20, pady=10)
 
         self.show_dashboard()
+        self.deiconify() # Show window
         self.check_notifications()
 
     def on_closing(self) -> None:
@@ -332,7 +554,7 @@ class DashboardFrame(ctk.CTkFrame):
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.header_frame.pack(fill="x", padx=20, pady=20)
         
-        self.label = ctk.CTkLabel(self.header_frame, text="Dashboard (Gözlem)", font=ctk.CTkFont(size=24, weight="bold"))
+        self.label = ctk.CTkLabel(self.header_frame, text="Dashboard", font=ctk.CTkFont(size=24, weight="bold"))
         self.label.pack(side="left")
 
         self.focus_var = ctk.StringVar(value="RAM")
@@ -431,7 +653,7 @@ class DashboardFrame(ctk.CTkFrame):
             for srv in self.app.server_manager.servers:
                 self.app.run_async_task(self.fetch_and_update(srv))
                 
-            await asyncio.sleep(2)
+            await asyncio.sleep(2) # Give a short buffer for fetches
             
             for remaining in range(10, 0, -1):
                 self.app.after(0, update_lbl, f"Sonraki yenileme: {remaining}sn")
@@ -463,6 +685,7 @@ class DashboardFrame(ctk.CTkFrame):
             except (ValueError, IndexError):
                 error_msg = "Veri Alınamadı"
 
+        # Update Live Stats to server dict
         if not error_msg:
             for server in self.app.server_manager.servers:
                 if f"{server.get('id')}" == f"{srv.get('id')}":
@@ -946,6 +1169,7 @@ class SettingsFrame(ctk.CTkFrame):
         self.btn_import = ctk.CTkButton(self, text="JSON İçe Aktar (Import)")
         self.btn_import.pack(padx=20, pady=5, anchor="w")
 
+        # GitHub Button
         self.github_btn = ctk.CTkButton(
             self, 
             text="🐙 GitHub: SyncSSH", 

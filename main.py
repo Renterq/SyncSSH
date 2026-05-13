@@ -425,7 +425,6 @@ class App(ctk.CTk):
         self.notification_btn.pack(side="right")
         self.current_alerts = []
 
-        # noinspection PyTypeChecker
         self.after(100, self.check_vault)
 
     def check_vault(self) -> None:

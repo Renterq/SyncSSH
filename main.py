@@ -57,7 +57,6 @@ class CircularProgressbar(ctk.CTkCanvas):
                         start=90, extent=extent, style="arc", width=self.width, outline=self.fg_color, tags="arc")
         self.itemconfig(self.text_label, text=f"{int(self.value)}%")
 
-# --- GÜVENLİK (VAULT) SINIFI ---
 class VaultManager:
     def __init__(self, settings_manager: 'SettingsManager', app_name="SyncSSH_Vault") -> None:
         self.settings = settings_manager

@@ -359,7 +359,6 @@ class UnlockVaultDialog(VaultDialogBase):
         else:
             self.error_lbl.configure(text="Şifre hatalı veya salt bozuk!")
 
-# --- ANA UYGULAMA ---
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()

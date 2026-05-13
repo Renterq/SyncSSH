@@ -125,7 +125,6 @@ class VaultManager:
         except Exception as _: # noinspection PyBroadException
             pass
 
-# --- YÖNETİCİ SINIFLARI ---
 class SSHConnectionManager:
     def __init__(self) -> None:
         self.clients: Dict[str, paramiko.SSHClient] = {}

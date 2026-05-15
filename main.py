@@ -122,7 +122,7 @@ class VaultManager:
     def delete_from_keyring(self) -> None:
         try:
             keyring.delete_password(self.app_name, "master_key")
-        except Exception as _: # noinspection PyBroadException
+        except Exception as _:
             pass
 
 class SSHConnectionManager:

@@ -373,7 +373,7 @@ class App(ctk.CTk):
         self.frames = {}
         self.ssh_manager = SSHConnectionManager()
         
-        self.withdraw() # Hide window until vault is unlocked
+        self.withdraw()
         
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
